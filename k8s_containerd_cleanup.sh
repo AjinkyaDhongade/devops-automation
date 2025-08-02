@@ -7,7 +7,7 @@ echo "Node: $(hostname)"
 echo "Started at: $(date)"
 echo "-----------------------------------------------"
 
-# Threshold logic to skip if disk usage is under limit
+# CONFIGURABLE THRESHOLD
 # THRESHOLD=80
 # USAGE=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
 
@@ -16,21 +16,26 @@ echo "-----------------------------------------------"
 #   exit 0
 # fi
 
-# Step 1 intentionally skipped — no kubectl on worker node
-
-# Step 2: Prune unused containerd images
+# STEP 1: Prune unused containerd images (fix: add --all)
 echo "[1/5] Pruning unused containerd images..."
-sudo ctr -n k8s.io images prune || echo "No unused images to prune."
+sudo ctr -n k8s.io images prune --all || echo "No unused images to prune."
 
-# Step 3: Remove unused containers
-echo "[2/5] Removing unused containerd containers..."
-sudo ctr -n k8s.io containers list -q | xargs -r sudo ctr -n k8s.io containers delete
+# STEP 2: Remove only non-running containers (fix: avoid deletion errors)
+echo "[2/5] Removing unused (non-running) containerd containers..."
+for container in $(sudo ctr -n k8s.io containers list -q); do
+    if ! sudo ctr -n k8s.io task ls | grep -q "$container"; then
+        echo "Deleting unused container: $container"
+        sudo ctr -n k8s.io containers delete "$container"
+    else
+        echo "Skipping running container: $container"
+    fi
+done
 
-# Step 4: Remove unused containerd snapshots
-echo "[3/5] Removing unused containerd snapshots..."
+# STEP 3: Remove unused containerd snapshots
+echo "[3/5] Removing orphaned containerd snapshots..."
 sudo ctr -n k8s.io snapshots list -q | xargs -r sudo ctr -n k8s.io snapshots remove
 
-# Step 5: Remove dangling (untagged) images with crictl
+# STEP 4: Remove dangling (untagged) images with crictl
 echo "[4/5] Removing dangling (untagged) images with crictl..."
 for image_id in $(sudo crictl images -q | sort | uniq); do
     image_info=$(sudo crictl inspecti "$image_id" 2>/dev/null || true)
@@ -40,12 +45,12 @@ for image_id in $(sudo crictl images -q | sort | uniq); do
     fi
 done
 
-# # Step 6: Clean logs and temporary files
-# echo "[5/5] Cleaning logs and temp directories..."
+# STEP 5: Clean logs and temporary directories
+# echo "[5/5] Cleaning logs and temporary directories..."
 # sudo journalctl --vacuum-time=3d
 # sudo find /var/log -type f -name "*.log" -exec sudo truncate -s 0 {} \;
 # sudo rm -rf /tmp/*
 # sudo rm -rf /run/user/*
 
 echo "-----------------------------------------------"
-echo "Cleanup finished at: $(date)"
+echo "Cleanup completed successfully at: $(date)"
